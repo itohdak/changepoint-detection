@@ -1,28 +1,65 @@
 #!/usr/bin/env python
 import rospy
 import numpy as np
-import StudentTMulti as st
+# import StudentTMulti as st
+import StudentT as st
 import Detector as dt
 import hazards as hz
 import matplotlib.pyplot as plt
 
 from jsk_recognition_msgs.msg import Spectrum
 from functools import partial
+import bayesian_changepoint_detection.online_changepoint_detection as oncd
+import bayesian_changepoint_detection.offline_changepoint_detection as offcd
+from std_srvs.srv import Trigger, TriggerResponse
 
 
 class Data_listener(object):
     def __init__(self):
         # Get spectrum length
-        spectrum_msg = rospy.wait_for_message('~spectrum', Spectrum)
-
+        spectrum_msg = rospy.wait_for_message(# '~spectrum',
+                                              "/audio_to_spectrum/spectrum_filtered",
+                                              Spectrum)
         self.dim = len(spectrum_msg.amplitude)
         self.init_work_variables()
-        self.sub = rospy.Subscriber("~spectrum", Spectrum, self.cb, queue_size=3, tcp_nodelay=True)
+        self.sub = rospy.Subscriber(# "~spectrum",
+                                    "/audio_to_spectrum/spectrum_filtered",
+                                    Spectrum, self.cb, queue_size=3, tcp_nodelay=True)
+        self.rate = rospy.get_param("~rate", 2)
+        self.timestamp = None
+        rospy.Service("~start_logging",
+                      Trigger, self.start_cb)
+        rospy.Service("~stop_logging",
+                      Trigger, self.stop_cb)
+
+    def start_cb(self, req):
+        self.data = []
+        self.is_logging = True
+        return TriggerResponse(success=True)
+    def stop_cb(self, req):
+        self.is_logging = False
+
+        self.data = np.array(self.data)
+        Q, P, Pcp = offcd.offline_changepoint_detection(
+            self.data,
+            partial(offcd.const_prior, l=(len(self.data)+1)),
+            offcd.gaussian_obs_log_likelihood,
+            truncate=-40)
+        fig, ax = plt.subplots(figsize=[18, 16])
+        ax = fig.add_subplot(2, 1, 1)
+        ax.plot(self.data[:])
+        ax = fig.add_subplot(2, 1, 2, sharex=ax)
+        ax.plot(np.exp(Pcp).sum(0))
+        plt.pause(.001)
+        return TriggerResponse(success=True)
 
     def init_work_variables(self):
         self.X = np.array([0.0] * self.dim, dtype=np.float32)
-	self.prior = st.StudentTMulti(self.dim)
+	# self.prior = st.StudentTMulti(self.dim)
+	self.prior = st.StudentT(0.1, .01, 1, 0)
 	self.detector = dt.Detector()
+        self.is_logging = False
+        self.data = []
 
     def stop(self):
         '''Stop the object'''
@@ -35,11 +72,24 @@ class Data_listener(object):
         self.ft_sub.unregister()
 
     def cb(self, msg):
+        if self.timestamp is not None and \
+           msg.header.stamp - self.timestamp < rospy.Duration(1./self.rate):
+            return
+        self.timestamp = msg.header.stamp
         spectrum = np.array(msg.amplitude, dtype=np.float32)
-        self.X = spectrum
+        freq = np.array(msg.frequency, dtype=np.float32)
+        self.X = freq[np.argmax(spectrum)]
+        self.X = [freq[np.argmax(spectrum)]]
+        # self.X = msg.amplitude
 
-	self.detector.detect(self.X,partial(hz.constant_hazard,lam=200),self.prior)
+	# self.detector.detect(self.X,partial(hz.constant_hazard,lam=200),self.prior)
+	self.detector.detect(self.X,
+                             partial(hz.constant_hazard,lam=250),
+                             self.prior)
     	self.detector.plot_data_CP(self.X)
+
+        if self.is_logging:
+            self.data.append(self.X)
 
 def main():
         rospy.init_node('data_listener', anonymous=True)

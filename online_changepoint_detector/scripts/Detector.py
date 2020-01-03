@@ -45,6 +45,8 @@ class Detector:
     
         self.maxes = np.append(self.maxes, self.R_old.argmax())
 	
+        if len(self.maxes) > 2:
+            print("score: {}".format(self.maxes[-1] - self.maxes[-2]))
 	if t > 0 and (self.maxes[-1] - self.maxes[-2]) < -20 :
 	   self.flag = True
 	   observation_likelihood.curr_theta()
@@ -88,5 +90,6 @@ class Detector:
     def plot_data_CP(self, x):
 
 	plt.scatter(len(self.maxes)*np.ones(len(x)), x)
+	# plt.plot(np.arange(len(x)), x)
 	plt.plot([self.CP,self.CP],[np.min(x),np.max(x)],'r')
 	plt.pause(0.0001)
